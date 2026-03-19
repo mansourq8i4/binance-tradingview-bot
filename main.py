@@ -17,10 +17,10 @@ client = Client(
 )
 
 # ==============================
-# ضع هنا إعداداتك
-TRADE_QUANTITY = 0.001   # كمية التداول (مثال: 0.001 BTC)
-SYMBOL = "BTCUSDT"       # الزوج المراد تداوله
-SECRET_TOKEN = os.getenv("WEBHOOK_SECRET")  # رمز سري لحماية الـ Webhook
+# ⚙️ الإعدادات — غيّر هنا فقط
+TRADE_AMOUNT_USDT = 800   # ← المبلغ بالدولار لكل صفقة
+SYMBOL = "ETHUSDT"        # ← العملة الافتراضية
+SECRET_TOKEN = os.getenv("WEBHOOK_SECRET")
 # ==============================
 
 
@@ -38,28 +38,45 @@ def webhook():
         logging.warning("❌ Unauthorized request")
         return jsonify({"error": "Unauthorized"}), 401
 
-    action = data.get("action")  # "buy" أو "sell"
-    symbol = data.get("symbol", SYMBOL)
-    quantity = float(data.get("quantity", TRADE_QUANTITY))
+    action = data.get("action")           # "buy" أو "sell"
+    symbol = data.get("symbol", SYMBOL)   # العملة (اختياري في الرسالة)
 
-    logging.info(f"📩 Signal received: {action} {quantity} {symbol}")
+    logging.info(f"📩 Signal: {action} | Symbol: {symbol}")
 
     try:
+        # احسب الكمية بناءً على السعر الحالي
+        price = float(client.get_symbol_ticker(symbol=symbol)["price"])
+        quantity = round(TRADE_AMOUNT_USDT / price, 4)
+
+        logging.info(f"💰 Amount: ${TRADE_AMOUNT_USDT} | Price: {price} | Qty: {quantity}")
+
         if action == "buy":
             order = client.order_market_buy(
                 symbol=symbol,
                 quantity=quantity
             )
-            logging.info(f"✅ BUY order executed: {order}")
-            return jsonify({"status": "BUY executed", "order": order}), 200
+            logging.info(f"✅ BUY executed: {order}")
+            return jsonify({
+                "status": "BUY executed ✅",
+                "symbol": symbol,
+                "amount_usdt": TRADE_AMOUNT_USDT,
+                "quantity": quantity,
+                "price": price
+            }), 200
 
         elif action == "sell":
             order = client.order_market_sell(
                 symbol=symbol,
                 quantity=quantity
             )
-            logging.info(f"✅ SELL order executed: {order}")
-            return jsonify({"status": "SELL executed", "order": order}), 200
+            logging.info(f"✅ SELL executed: {order}")
+            return jsonify({
+                "status": "SELL executed ✅",
+                "symbol": symbol,
+                "amount_usdt": TRADE_AMOUNT_USDT,
+                "quantity": quantity,
+                "price": price
+            }), 200
 
         else:
             return jsonify({"error": "Invalid action. Use 'buy' or 'sell'"}), 400
