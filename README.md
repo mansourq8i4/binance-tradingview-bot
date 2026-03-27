@@ -1,1 +1,1 @@
-# binance-tradingview-bot
+# okx-tradingview-bot
