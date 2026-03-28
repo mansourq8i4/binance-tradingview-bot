@@ -20,7 +20,7 @@ TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
 TRADE_AMOUNT_USDT = 800
-DEFAULT_SYMBOL = "ETHUSDT"
+SYMBOL = "ETHUSDT"
 
 # OKX Client
 client = ccxt.okx({
@@ -74,67 +74,77 @@ def webhook():
     try:
         data = request.get_json()
         
+        # اقبل أي بيانات
         if not data:
             return jsonify({"error": "No data"}), 400
         
-        # استخراج البيانات من TradingView (Algo Sniper v2)
-        signal = data.get("signal", "").lower()  # "buy" أو "sell"
-        ticker = data.get("ticker", DEFAULT_SYMBOL).upper()  # "BONKUSDT"
+        action = data.get("action", "").lower()
+        symbol = data.get("symbol", SYMBOL)
         
-        # تحويل ticker إلى صيغة OKX (مثل BONK/USDT)
-        if "/" not in ticker:
-            symbol = ticker.replace("USDT", "") + "/USDT"
-        else:
-            symbol = ticker
+        # اقبل buy أو sell بدون تحقق آخر
+        if action not in ["buy", "sell"]:
+            return jsonify({"error": "Invalid action"}), 400
         
-        # اقبل buy أو sell بس
-        if signal not in ["buy", "sell"]:
-            logger.warning(f"❌ Invalid signal: {signal}")
-            return jsonify({"error": "Invalid signal"}), 400
-        
-        logger.info(f"📨 Signal: {signal.upper()} | {symbol}")
+        logger.info(f"📨 Signal: {action.upper()} | {symbol}")
         
         try:
-            ticker_data = client.fetch_ticker(symbol)
-            price = ticker_data['last']
+            ticker = client.fetch_ticker(symbol)
+            price = ticker['last']
             quantity = round(TRADE_AMOUNT_USDT / price, 4)
             
-            logger.info(f"💰 Amount: ${TRADE_AMOUNT_USDT} | Price: ${price} | Qty: {quantity}")
-            
-            if signal == "buy":
+            if action == "buy":
                 order = client.create_market_buy_order(symbol, quantity)
                 stats["last_buy_price"] = price
                 stats["total_trades"] += 1
                 
                 message = f"""
-🟢 <b>صفقة شراء جديدة!</b>
+🟢 <b>صفقة شراء!</b>
 
-💎 <b>العملة:</b> {symbol}
-💵 <b>المبلغ:</b> ${TRADE_AMOUNT_USDT}
-📊 <b>السعر:</b> ${price:.8f}
-🔢 <b>الكمية:</b> {quantity}
-🕐 <b>الوقت:</b> {datetime.now().strftime('%H:%M:%S')}
+💎 {symbol}
+💵 ${TRADE_AMOUNT_USDT}
+📊 ${price:.2f}
+🔢 {quantity}
+🕐 {datetime.now().strftime('%H:%M:%S')}
 
-━━━━━━━━━━━━━━━━━━━━
-📈 <b>الإحصائيات:</b>
-📊 إجمالي الصفقات: {stats['total_trades']}
-✅ صفقات ناجحة: {stats['successful_trades']}
-🎯 نسبة النجاح: {(stats['successful_trades'] / stats['total_trades'] * 100 if stats['total_trades'] > 0 else 0):.1f}%
-💰 إجمالي الربح: ${stats['total_profit']:.2f}
+📊 الصفقات: {stats['total_trades']}
+✅ الناجحة: {stats['successful_trades']}
+💰 الربح: ${stats['total_profit']:.2f}
                 """
                 send_telegram(message)
                 
-                logger.info(f"✅ BUY executed")
-                return jsonify({"status": "BUY ✅", "symbol": symbol, "price": price}), 200
+                return jsonify({"status": "BUY ✅", "price": price}), 200
             
-            elif signal == "sell":
+            elif action == "sell":
                 order = client.create_market_sell_order(symbol, quantity)
                 stats["total_trades"] += 1
                 
                 message = f"""
-🔴 <b>صفقة بيع جديدة!</b>
+🔴 <b>صفقة بيع!</b>
 
-💎 <b>العملة:</b> {symbol}
-💵 <b>المبلغ:</b> ${TRADE_AMOUNT_USDT}
-📊 <b>السعر:</b> ${price:.8f}
-🔢 <b>الكمية:</b> {quantity}​​​​​​​​​​​​​​​​
+💎 {symbol}
+💵 ${TRADE_AMOUNT_USDT}
+📊 ${price:.2f}
+🔢 {quantity}
+🕐 {datetime.now().strftime('%H:%M:%S')}
+
+📊 الصفقات: {stats['total_trades']}
+✅ الناجحة: {stats['successful_trades']}
+💰 الربح: ${stats['total_profit']:.2f}
+                """
+                send_telegram(message)
+                
+                return jsonify({"status": "SELL ✅", "price": price}), 200
+        
+        except Exception as e:
+            logger.error(f"❌ Error: {e}")
+            send_telegram(f"❌ خطأ: {str(e)}")
+            return jsonify({"error": str(e)}), 500
+    
+    except Exception as e:
+        logger.error(f"❌ Webhook error: {e}")
+        return jsonify({"error": str(e)}), 500
+
+if __name__ == "__main__":
+    port = int(os.getenv("PORT", 5000))
+    logger.info(f"🚀 Bot started on port {port}")
+    app.run(host="0.0.0.0", port=port, debug=False)
