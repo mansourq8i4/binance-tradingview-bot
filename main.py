@@ -15,7 +15,8 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # ==================== الإعدادات ====================
-# OKX
+
+# OKX - غيّرنا من Binance إلى OKX
 OKX_API_KEY = os.getenv("OKX_API_KEY")
 OKX_API_SECRET = os.getenv("OKX_API_SECRET")
 OKX_PASSPHRASE = os.getenv("OKX_PASSPHRASE")
@@ -25,17 +26,19 @@ TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
 # Trading
-SYMBOL = "ETH/USDT"  # العملة الافتراضية
-TRADE_AMOUNT_USDT = 800  # المبلغ بالـ USDT
+TRADE_AMOUNT_USDT = 800
+SYMBOL = "ETHUSDT"
 SECRET_TOKEN = os.getenv("WEBHOOK_SECRET")
 
 # ==================== إعدادات OKX ====================
-exchange = ccxt.okx({
+# ✅ بدل Binance Client استخدمنا OKX
+
+client = ccxt.okx({
     'apiKey': OKX_API_KEY,
     'secret': OKX_API_SECRET,
     'password': OKX_PASSPHRASE,
     'enableRateLimit': True,
-    'sandbox': True  # ✅ Demo Trading
+    'sandbox': True  # ✅ Demo Trading Mode
 })
 
 # ==================== إحصائيات التداول ====================
@@ -72,52 +75,13 @@ def calculate_profit(action, price, quantity):
             stats["successful_trades"] += 1
     return profit
 
-# ==================== دالة التنفيذ ====================
-def execute_trade(action, symbol, quantity, price):
-    """تنفيذ الصفقة على OKX"""
-    try:
-        if action == "buy":
-            order = exchange.create_market_buy_order(symbol, quantity)
-            stats["last_buy_price"] = price
-            stats["total_trades"] += 1
-            
-            logger.info(f"✅ BUY executed: {order}")
-            return {
-                "status": "BUY executed ✅",
-                "quantity": quantity,
-                "price": price,
-                "order": order
-            }
-            
-        elif action == "sell":
-            order = exchange.create_market_sell_order(symbol, quantity)
-            profit = calculate_profit("sell", price, quantity)
-            stats["total_trades"] += 1
-            
-            logger.info(f"✅ SELL executed: {order}")
-            return {
-                "status": "SELL executed ✅",
-                "quantity": quantity,
-                "price": price,
-                "profit": profit,
-                "order": order
-            }
-        else:
-            return {"error": "Invalid action"}
-            
-    except Exception as e:
-        error_msg = str(e)
-        logger.error(f"❌ OKX error: {error_msg}")
-        send_telegram(f"❌ <b>خطأ في التداول</b>\n\n{error_msg}")
-        return {"error": error_msg}
-
-# ==================== Routes ====================
-
+# ==================== Health Check ====================
 @app.route("/", methods=["GET"])
 def home():
     """فحص البوت"""
     return jsonify({"status": "Bot is running ✅"}), 200
 
+# ==================== الإحصائيات ====================
 @app.route("/stats", methods=["GET"])
 def get_stats():
     """عرض الإحصائيات"""
@@ -132,49 +96,51 @@ def get_stats():
         "total_profit": f"${stats['total_profit']:.2f}"
     }), 200
 
+# ==================== الـ Webhook الرئيسي ====================
 @app.route("/webhook", methods=["POST"])
 def webhook():
     """استقبال الإشارة من TradingView"""
     try:
-        # التحقق من الـ Token
+        # الحصول على البيانات
         data = request.get_json()
         
+        # التحقق من الـ Token
         if not data or data.get("token") != SECRET_TOKEN:
             logger.warning("❌ Unauthorized request")
             return jsonify({"error": "Unauthorized"}), 401
         
-        # استخراج البيانات
+        # استخراج البيانات من TradingView
         action = data.get("action", "").lower()  # buy أو sell
         symbol = data.get("symbol", SYMBOL)
         
+        # التحقق من صحة الـ action
         if action not in ["buy", "sell"]:
             return jsonify({"error": "Invalid action"}), 400
         
-        logger.info(f"📨 Signal: {action} | Symbol: {symbol}")
+        logger.info(f"📨 Signal Received: {action.upper()} | Symbol: {symbol}")
         
+        # ==================== تنفيذ الصفقة ====================
         try:
-            # الحصول على السعر الحالي
-            ticker = exchange.fetch_ticker(symbol)
+            # الحصول على السعر الحالي من OKX
+            ticker = client.fetch_ticker(symbol)
             price = ticker['last']
             
             # حساب الكمية
             quantity = round(TRADE_AMOUNT_USDT / price, 4)
             
-            logger.info(f"💰 Amount: ${TRADE_AMOUNT_USDT} | Price: {price} | Qty: {quantity}")
+            logger.info(f"💰 Amount: ${TRADE_AMOUNT_USDT} | Price: ${price} | Qty: {quantity}")
             
-            # تنفيذ الصفقة
-            result = execute_trade(action, symbol, quantity, price)
-            
-            # حساب نسبة النجاح
-            win_rate = 0
-            if stats["total_trades"] > 0:
-                win_rate = (stats["successful_trades"] / stats["total_trades"]) * 100
-            
-            profit_emoji = "🟢" if result.get("profit", 0) >= 0 else "🔴"
-            
-            # بناء الرسالة
+            # ==================== تنفيذ Buy ====================
             if action == "buy":
-                message = f"""
+                try:
+                    order = client.create_market_buy_order(symbol, quantity)
+                    stats["last_buy_price"] = price
+                    stats["total_trades"] += 1
+                    
+                    logger.info(f"✅ BUY executed: {order}")
+                    
+                    # بناء رسالة Telegram للشراء
+                    message = f"""
 🟢 <b>صفقة شراء جديدة!</b>
 
 💎 <b>العملة:</b> {symbol}
@@ -187,12 +153,38 @@ def webhook():
 📈 <b>الإحصائيات:</b>
 📊 إجمالي الصفقات: {stats['total_trades']}
 ✅ صفقات ناجحة: {stats['successful_trades']}
-🎯 نسبة النجاح: {win_rate:.1f}%
+🎯 نسبة النجاح: {(stats['successful_trades'] / stats['total_trades'] * 100 if stats['total_trades'] > 0 else 0):.1f}%
 💰 إجمالي الربح: ${stats['total_profit']:.2f}
-                """
-            else:  # sell
-                profit = result.get("profit", 0)
-                message = f"""
+                    """
+                    
+                    send_telegram(message)
+                    
+                    return jsonify({
+                        "status": "BUY executed ✅",
+                        "quantity": quantity,
+                        "price": price
+                    }), 200
+                
+                except Exception as e:
+                    error_msg = str(e)
+                    logger.error(f"❌ Buy Error: {error_msg}")
+                    send_telegram(f"❌ <b>خطأ في صفقة الشراء</b>\n\n{error_msg}")
+                    return jsonify({"error": error_msg}), 500
+            
+            # ==================== تنفيذ Sell ====================
+            elif action == "sell":
+                try:
+                    order = client.create_market_sell_order(symbol, quantity)
+                    profit = calculate_profit("sell", price, quantity)
+                    stats["total_trades"] += 1
+                    
+                    logger.info(f"✅ SELL executed: {order}")
+                    
+                    # تحديد الإيموجي حسب الربح/الخسارة
+                    profit_emoji = "🟢" if profit >= 0 else "🔴"
+                    
+                    # بناء رسالة Telegram للبيع
+                    message = f"""
 🔴 <b>صفقة بيع جديدة!</b>
 
 💎 <b>العملة:</b> {symbol}
@@ -205,32 +197,38 @@ def webhook():
 📈 <b>الإحصائيات:</b>
 📊 إجمالي الصفقات: {stats['total_trades']}
 ✅ صفقات ناجحة: {stats['successful_trades']}
-🎯 نسبة النجاح: {win_rate:.1f}%
+🎯 نسبة النجاح: {(stats['successful_trades'] / stats['total_trades'] * 100 if stats['total_trades'] > 0 else 0):.1f}%
 {profit_emoji} <b>الربح/الخسارة:</b> ${profit:.2f}
 💰 <b>إجمالي الربح:</b> ${stats['total_profit']:.2f}
-                """
-            
-            # إرسال الرسالة
-            send_telegram(message)
-            
-            return jsonify({
-                "status": result.get("status", "executed"),
-                "quantity": quantity,
-                "price": price,
-                "profit": result.get("profit", 0)
-            }), 200
-            
+                    """
+                    
+                    send_telegram(message)
+                    
+                    return jsonify({
+                        "status": "SELL executed ✅",
+                        "quantity": quantity,
+                        "price": price,
+                        "profit": profit
+                    }), 200
+                
+                except Exception as e:
+                    error_msg = str(e)
+                    logger.error(f"❌ Sell Error: {error_msg}")
+                    send_telegram(f"❌ <b>خطأ في صفقة البيع</b>\n\n{error_msg}")
+                    return jsonify({"error": error_msg}), 500
+        
         except Exception as e:
             error_msg = str(e)
-            logger.error(f"❌ Exchange error: {error_msg}")
-            send_telegram(f"❌ <b>خطأ في الاتصال</b>\n\n{error_msg}")
+            logger.error(f"❌ OKX API Error: {error_msg}")
+            send_telegram(f"❌ <b>خطأ في الاتصال بـ OKX</b>\n\n{error_msg}")
             return jsonify({"error": error_msg}), 500
     
     except Exception as e:
-        logger.error(f"❌ Webhook error: {e}")
+        logger.error(f"❌ Webhook Error: {e}")
         return jsonify({"error": str(e)}), 500
 
 # ==================== تشغيل البوت ====================
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 5000))
-    app.run(host="0.0.0.0", port=port)
+    logger.info(f"🚀 Bot started on port {port}")
+    app.run(host="0.0.0.0", port=port, debug=False)
