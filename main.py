@@ -62,25 +62,21 @@ def webhook():
         
         logger.info(f"Received data: {data}")
         
-        # استخراج البيانات من Algo Sniper v2
-        signal = data.get("signal", "").lower()
+        signal = data.get("signal", data.get("action", "")).lower()
         ticker = data.get("ticker", DEFAULT_SYMBOL).upper()
         trade_power = data.get("trade_power", TRADE_AMOUNT)
         price = data.get("price", 0)
         
-        # تحويل trade_power إلى رقم
         try:
             amount = float(trade_power)
         except:
             amount = TRADE_AMOUNT
         
-        # تحويل ticker إلى صيغة OKX
         if "/" not in ticker:
             symbol = ticker.replace("USDT", "") + "/USDT"
         else:
             symbol = ticker
         
-        # التحقق من signal
         if signal not in ["buy", "sell"]:
             logger.warning(f"Invalid signal: {signal}")
             return jsonify({"error": "Invalid signal"}), 400
@@ -88,7 +84,6 @@ def webhook():
         logger.info(f"Signal: {signal.upper()} | Symbol: {symbol} | Amount: ${amount}")
         
         try:
-            # الحصول على السعر الحالي
             tick = client.fetch_ticker(symbol)
             current_price = tick['last']
             qty = round(amount / current_price, 4)
