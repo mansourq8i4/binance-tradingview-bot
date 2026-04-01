@@ -29,10 +29,7 @@ client = ccxt.okx({
     'sandbox': False
 })
 
-# تتبع الصفقات المفتوحة
-open_positions = {}
-
-stats = {"total_trades": 0, "successful_trades": 0, "total_profit": 0.0, "last_buy_price": 0.0}
+stats = {"total_trades": 0, "successful_trades": 0, "total_profit": 0.0}
 
 def send_telegram(msg):
     try:
@@ -63,6 +60,27 @@ def get_okx_symbol(ticker):
     logger.warning(f"Symbol {ticker} not found in OKX")
     return None
 
+def check_open_positions(symbol):
+    """التحقق من الصفقات المفتوحة على OKX مباشرة"""
+    try:
+        # الحصول على الأوامر المفتوحة
+        orders = client.fetch_open_orders(symbol)
+        if orders:
+            logger.info(f"Found {len(orders)} open orders for {symbol}")
+            return True
+        
+        # الحصول على المراكز المفتوحة (للتداول بالهامش)
+        positions = client.fetch_positions([symbol])
+        for pos in positions:
+            if pos.get('contracts', 0) > 0 or pos.get('percentage', 0) > 0:
+                logger.info(f"Found open position for {symbol}")
+                return True
+        
+        return False
+    except Exception as e:
+        logger.warning(f"Could not check positions: {e}")
+        return False
+
 @app.route("/", methods=["GET"])
 def home():
     return jsonify({"status": "Bot is running OK - LIVE TRADING"}), 200
@@ -74,8 +92,7 @@ def get_stats():
         "total_trades": stats["total_trades"],
         "successful_trades": stats["successful_trades"],
         "win_rate": f"{wr:.1f}%",
-        "total_profit": f"${stats['total_profit']:.2f}",
-        "open_positions": open_positions
+        "total_profit": f"${stats['total_profit']:.2f}"
     }), 200
 
 @app.route("/webhook", methods=["POST"])
@@ -109,30 +126,29 @@ def webhook():
         
         logger.info(f"Signal: {signal.upper()} | Symbol: {symbol} | Amount: ${amount}")
         
-        # التحقق من الصفقات المفتوحة
+        # التحقق من الصفقات المفتوحة على OKX
+        has_open_position = check_open_positions(symbol)
+        
         if signal == "buy":
-            # إذا كانت هناك صفقة مفتوحة - تجاهل الشراء
-            if symbol in open_positions:
+            if has_open_position:
                 msg = f"⏭️ <b>BUY IGNORED</b>\n\n"
                 msg += f"<b>Symbol:</b> {symbol}\n"
-                msg += f"<b>Reason:</b> Position already open\n"
-                msg += f"<b>Entry Price:</b> ${open_positions[symbol]['entry_price']}\n"
+                msg += f"<b>Reason:</b> Position already open on OKX\n"
                 msg += f"<b>Time:</b> {datetime.now().strftime('%H:%M:%S')}\n"
                 
                 send_telegram(msg)
-                logger.info(f"BUY signal ignored for {symbol} - position already open")
+                logger.info(f"BUY signal ignored for {symbol} - open position exists on OKX")
                 return jsonify({"status": "BUY IGNORED - Position already open"}), 200
         
         elif signal == "sell":
-            # إذا لم تكن هناك صفقة مفتوحة - تجاهل البيع
-            if symbol not in open_positions:
+            if not has_open_position:
                 msg = f"⏭️ <b>SELL IGNORED</b>\n\n"
                 msg += f"<b>Symbol:</b> {symbol}\n"
-                msg += f"<b>Reason:</b> No open position\n"
+                msg += f"<b>Reason:</b> No open position on OKX\n"
                 msg += f"<b>Time:</b> {datetime.now().strftime('%H:%M:%S')}\n"
                 
                 send_telegram(msg)
-                logger.info(f"SELL signal ignored for {symbol} - no open position")
+                logger.info(f"SELL signal ignored for {symbol} - no open position on OKX")
                 return jsonify({"status": "SELL IGNORED - No open position"}), 200
         
         try:
@@ -144,16 +160,7 @@ def webhook():
             
             if signal == "buy":
                 order = client.create_market_buy_order(symbol, qty)
-                stats["last_buy_price"] = current_price
                 stats["total_trades"] += 1
-                
-                # إضافة الصفقة للصفقات المفتوحة
-                open_positions[symbol] = {
-                    "entry_price": current_price,
-                    "quantity": qty,
-                    "amount": amount,
-                    "entry_time": datetime.now().strftime('%H:%M:%S')
-                }
                 
                 msg = f"<b>🟢 BUY EXECUTED (LIVE)</b>\n\n"
                 msg += f"<b>Pair:</b> {symbol}\n"
@@ -161,8 +168,7 @@ def webhook():
                 msg += f"<b>Amount:</b> ${amount:.2f}\n"
                 msg += f"<b>Qty:</b> {qty}\n"
                 msg += f"<b>Time:</b> {datetime.now().strftime('%H:%M:%S')}\n\n"
-                msg += f"<b>Stats:</b>\n"
-                msg += f"Total Trades: {stats['total_trades']}\n"
+                msg += f"<b>Total Trades:</b> {stats['total_trades']}\n"
                 msg += f"<b>⚠️ LIVE TRADING ⚠️</b>\n"
                 
                 send_telegram(msg)
@@ -173,28 +179,18 @@ def webhook():
                 order = client.create_market_sell_order(symbol, qty)
                 stats["total_trades"] += 1
                 
-                # حساب الربح/الخسارة
-                entry_price = open_positions[symbol]["entry_price"]
-                profit = (current_price - entry_price) * qty
-                
                 msg = f"<b>🔴 SELL EXECUTED (LIVE)</b>\n\n"
                 msg += f"<b>Pair:</b> {symbol}\n"
-                msg += f"<b>Entry Price:</b> ${entry_price:.8f}\n"
                 msg += f"<b>Exit Price:</b> ${current_price:.8f}\n"
                 msg += f"<b>Qty:</b> {qty}\n"
-                msg += f"<b>Profit/Loss:</b> ${profit:.2f}\n"
                 msg += f"<b>Time:</b> {datetime.now().strftime('%H:%M:%S')}\n\n"
-                msg += f"<b>Stats:</b>\n"
-                msg += f"Total Trades: {stats['total_trades']}\n"
+                msg += f"<b>Total Trades:</b> {stats['total_trades']}\n"
                 msg += f"<b>⚠️ LIVE TRADING ⚠️</b>\n"
                 
                 send_telegram(msg)
                 logger.info("SELL executed OK")
                 
-                # حذف الصفقة من الصفقات المفتوحة
-                del open_positions[symbol]
-                
-                return jsonify({"status": "SELL OK", "symbol": symbol, "profit": profit}), 200
+                return jsonify({"status": "SELL OK", "symbol": symbol}), 200
         
         except Exception as e:
             logger.error(f"Error: {e}")
