@@ -29,6 +29,9 @@ client = ccxt.okx({
     'sandbox': False
 })
 
+# تتبع الصفقات المفتوحة
+open_positions = {}
+
 stats = {"total_trades": 0, "successful_trades": 0, "total_profit": 0.0, "last_buy_price": 0.0}
 
 def send_telegram(msg):
@@ -71,7 +74,8 @@ def get_stats():
         "total_trades": stats["total_trades"],
         "successful_trades": stats["successful_trades"],
         "win_rate": f"{wr:.1f}%",
-        "total_profit": f"${stats['total_profit']:.2f}"
+        "total_profit": f"${stats['total_profit']:.2f}",
+        "open_positions": open_positions
     }), 200
 
 @app.route("/webhook", methods=["POST"])
@@ -105,6 +109,32 @@ def webhook():
         
         logger.info(f"Signal: {signal.upper()} | Symbol: {symbol} | Amount: ${amount}")
         
+        # التحقق من الصفقات المفتوحة
+        if signal == "buy":
+            # إذا كانت هناك صفقة مفتوحة - تجاهل الشراء
+            if symbol in open_positions:
+                msg = f"⏭️ <b>BUY IGNORED</b>\n\n"
+                msg += f"<b>Symbol:</b> {symbol}\n"
+                msg += f"<b>Reason:</b> Position already open\n"
+                msg += f"<b>Entry Price:</b> ${open_positions[symbol]['entry_price']}\n"
+                msg += f"<b>Time:</b> {datetime.now().strftime('%H:%M:%S')}\n"
+                
+                send_telegram(msg)
+                logger.info(f"BUY signal ignored for {symbol} - position already open")
+                return jsonify({"status": "BUY IGNORED - Position already open"}), 200
+        
+        elif signal == "sell":
+            # إذا لم تكن هناك صفقة مفتوحة - تجاهل البيع
+            if symbol not in open_positions:
+                msg = f"⏭️ <b>SELL IGNORED</b>\n\n"
+                msg += f"<b>Symbol:</b> {symbol}\n"
+                msg += f"<b>Reason:</b> No open position\n"
+                msg += f"<b>Time:</b> {datetime.now().strftime('%H:%M:%S')}\n"
+                
+                send_telegram(msg)
+                logger.info(f"SELL signal ignored for {symbol} - no open position")
+                return jsonify({"status": "SELL IGNORED - No open position"}), 200
+        
         try:
             tick = client.fetch_ticker(symbol)
             current_price = tick['last']
@@ -117,14 +147,23 @@ def webhook():
                 stats["last_buy_price"] = current_price
                 stats["total_trades"] += 1
                 
+                # إضافة الصفقة للصفقات المفتوحة
+                open_positions[symbol] = {
+                    "entry_price": current_price,
+                    "quantity": qty,
+                    "amount": amount,
+                    "entry_time": datetime.now().strftime('%H:%M:%S')
+                }
+                
                 msg = f"<b>🟢 BUY EXECUTED (LIVE)</b>\n\n"
                 msg += f"<b>Pair:</b> {symbol}\n"
-                msg += f"<b>Price:</b> ${current_price:.8f}\n"
+                msg += f"<b>Entry Price:</b> ${current_price:.8f}\n"
                 msg += f"<b>Amount:</b> ${amount:.2f}\n"
                 msg += f"<b>Qty:</b> {qty}\n"
                 msg += f"<b>Time:</b> {datetime.now().strftime('%H:%M:%S')}\n\n"
-                msg += f"<b>Total Trades:</b> {stats['total_trades']}\n"
-                msg += f"<b>⚠️ WARNING: LIVE TRADING ⚠️</b>\n"
+                msg += f"<b>Stats:</b>\n"
+                msg += f"Total Trades: {stats['total_trades']}\n"
+                msg += f"<b>⚠️ LIVE TRADING ⚠️</b>\n"
                 
                 send_telegram(msg)
                 logger.info("BUY executed OK")
@@ -134,18 +173,28 @@ def webhook():
                 order = client.create_market_sell_order(symbol, qty)
                 stats["total_trades"] += 1
                 
+                # حساب الربح/الخسارة
+                entry_price = open_positions[symbol]["entry_price"]
+                profit = (current_price - entry_price) * qty
+                
                 msg = f"<b>🔴 SELL EXECUTED (LIVE)</b>\n\n"
                 msg += f"<b>Pair:</b> {symbol}\n"
-                msg += f"<b>Price:</b> ${current_price:.8f}\n"
-                msg += f"<b>Amount:</b> ${amount:.2f}\n"
+                msg += f"<b>Entry Price:</b> ${entry_price:.8f}\n"
+                msg += f"<b>Exit Price:</b> ${current_price:.8f}\n"
                 msg += f"<b>Qty:</b> {qty}\n"
+                msg += f"<b>Profit/Loss:</b> ${profit:.2f}\n"
                 msg += f"<b>Time:</b> {datetime.now().strftime('%H:%M:%S')}\n\n"
-                msg += f"<b>Total Trades:</b> {stats['total_trades']}\n"
-                msg += f"<b>⚠️ WARNING: LIVE TRADING ⚠️</b>\n"
+                msg += f"<b>Stats:</b>\n"
+                msg += f"Total Trades: {stats['total_trades']}\n"
+                msg += f"<b>⚠️ LIVE TRADING ⚠️</b>\n"
                 
                 send_telegram(msg)
                 logger.info("SELL executed OK")
-                return jsonify({"status": "SELL OK", "symbol": symbol}), 200
+                
+                # حذف الصفقة من الصفقات المفتوحة
+                del open_positions[symbol]
+                
+                return jsonify({"status": "SELL OK", "symbol": symbol, "profit": profit}), 200
         
         except Exception as e:
             logger.error(f"Error: {e}")
